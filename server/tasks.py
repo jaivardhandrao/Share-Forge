@@ -26,15 +26,15 @@ class TaskSpec:
 
 
 EASY_INSTRUCTIONS = (
-    "TATAGOLD.NS, calm regime. Trade long-only on daily bars. "
+    "TATAGOLD.NS, post-launch settling phase. Trade long-only on daily bars. "
     "On each step you observe the last 20 bars of OHLCV plus indicators "
     "(SMA, EMA, RSI, MACD, Bollinger) and your current position. "
     "Action: 0=HOLD, 1=BUY, 2=SELL. Goal: beat buy-and-hold total return."
 )
 
 MEDIUM_VOLATILE_INSTRUCTIONS = (
-    "TATAGOLD.NS during the COVID crash and recovery. "
-    "Drawdowns are large; rebounds are sharp. "
+    "TATAGOLD.NS during a volatile regime. "
+    "Drawdowns appear; rebounds are sharp. "
     "Optimize Sharpe ratio rather than raw return. "
     "Excessive turnover is penalized."
 )
@@ -56,32 +56,32 @@ TASKS: Dict[TaskDifficulty, TaskSpec] = {
     TaskDifficulty.EASY_LONG_ONLY: TaskSpec(
         task_id="a1b2c3d4-1111-4000-a000-000000000001",
         task_type=TaskDifficulty.EASY_LONG_ONLY,
-        start="2018-01-01",
-        end="2019-12-31",
+        start="2024-02-15",
+        end="2024-08-31",
         instructions=EASY_INSTRUCTIONS,
         grading_mode="total_return",
     ),
     TaskDifficulty.MEDIUM_VOLATILE: TaskSpec(
         task_id="a1b2c3d4-2222-4000-a000-000000000002",
         task_type=TaskDifficulty.MEDIUM_VOLATILE,
-        start="2020-01-01",
-        end="2021-06-30",
+        start="2024-09-01",
+        end="2025-02-28",
         instructions=MEDIUM_VOLATILE_INSTRUCTIONS,
         grading_mode="sharpe",
     ),
     TaskDifficulty.MEDIUM_SIDEWAYS: TaskSpec(
         task_id="a1b2c3d4-3333-4000-a000-000000000003",
         task_type=TaskDifficulty.MEDIUM_SIDEWAYS,
-        start="2022-01-01",
-        end="2022-12-31",
+        start="2025-03-01",
+        end="2025-08-31",
         instructions=MEDIUM_SIDEWAYS_INSTRUCTIONS,
         grading_mode="sharpe_turnover",
     ),
     TaskDifficulty.HARD_ADVERSARIAL: TaskSpec(
         task_id="a1b2c3d4-4444-4000-a000-000000000004",
         task_type=TaskDifficulty.HARD_ADVERSARIAL,
-        start="2023-01-01",
-        end="2024-06-30",
+        start="2025-09-01",
+        end="2026-03-31",
         instructions=HARD_INSTRUCTIONS,
         grading_mode="composite",
         adversarial_shock=True,
