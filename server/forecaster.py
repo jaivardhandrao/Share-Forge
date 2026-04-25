@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -329,10 +329,141 @@ def evaluate_ml_on_holdout() -> Dict[str, float]:
     }
 
 
+def chronos_forecast(
+    horizon_days: int,
+    n_samples: int = 200,
+    context_length: int = 64,
+    finetuned: bool = False,
+    history_lookback: int = 252,
+    model_id: str = "amazon/chronos-t5-tiny",
+) -> ForecastResult:
+    """
+    Run Amazon's Chronos foundation model on the most recent `context_length`
+    closes from the training-cutoff dataset and return a percentile-banded
+    price path.
+    """
+    try:
+        from ml.chronos_forecaster import chronos_available, get_forecaster
+    except ImportError as e:
+        raise RuntimeError(f"Chronos module unavailable: {e}")
+
+    if not chronos_available():
+        raise RuntimeError(
+            "chronos-forecasting not installed. Run "
+            "`pip install chronos-forecasting`."
+        )
+
+    df = load()
+    if df.empty:
+        raise RuntimeError("Training dataset empty — run `python -m server.data_loader`")
+
+    closes = df["close"].to_numpy(dtype=np.float64)
+    dates = pd.to_datetime(df["date"])
+    last_close = float(closes[-1])
+    last_date = dates.iloc[-1]
+
+    context = closes[-context_length:].astype(np.float32)
+    forecaster = get_forecaster(model_id=model_id, finetuned=finetuned)
+    result = forecaster.predict(prices=context, horizon=horizon_days, n_samples=n_samples)
+
+    forecast_dates = _next_trading_dates(last_date, horizon_days)
+    history_dates = dates.iloc[-history_lookback:].dt.strftime("%Y-%m-%d").tolist()
+    history_close = closes[-history_lookback:].tolist()
+
+    if len(result.p50) >= 2:
+        log_rets = np.diff(np.log(np.maximum(np.asarray(result.p50), 1e-8)))
+        mu = float(log_rets.mean())
+        sigma = float(log_rets.std()) if log_rets.size > 1 else 0.0
+    else:
+        mu, sigma = 0.0, 0.0
+
+    return ForecastResult(
+        horizon_days=horizon_days,
+        method=result.method,
+        mu=mu,
+        sigma=sigma,
+        last_close=last_close,
+        last_date=last_date.strftime("%Y-%m-%d"),
+        history_dates=history_dates,
+        history_close=history_close,
+        forecast_dates=[d.strftime("%Y-%m-%d") for d in forecast_dates],
+        median=result.p50,
+        p05=result.p05,
+        p25=result.p25,
+        p75=result.p75,
+        p95=result.p95,
+    )
+
+
+def naive_forecast(
+    horizon_days: int,
+    history_lookback: int = 252,
+    seed: Optional[int] = None,
+    **_unused,
+) -> ForecastResult:
+    """
+    Naive persistence baseline: predict every future day = last training close.
+
+    Bands grow with sqrt(horizon) using the recent 60-day realized volatility,
+    so the prediction acknowledges uncertainty even though the median is flat.
+    This is the textbook "you have to beat me" baseline — most price-prediction
+    papers report MAPE relative to this.
+    """
+    df = load()
+    if df.empty:
+        raise RuntimeError("Training dataset empty — run `python -m server.data_loader` first")
+
+    closes = df["close"].to_numpy(dtype=np.float64)
+    dates = pd.to_datetime(df["date"])
+    last_close = float(closes[-1])
+    last_date = dates.iloc[-1]
+
+    log_rets = np.diff(np.log(np.maximum(closes[-60:], 1e-8)))
+    daily_vol = float(log_rets.std()) if log_rets.size > 1 else 0.01
+    daily_vol = max(daily_vol, 1e-6)
+
+    median = [last_close] * horizon_days
+    p05, p25, p75, p95 = [], [], [], []
+    for t in range(horizon_days):
+        scale = daily_vol * np.sqrt(t + 1)
+        p05.append(last_close * float(np.exp(-1.645 * scale)))
+        p25.append(last_close * float(np.exp(-0.674 * scale)))
+        p75.append(last_close * float(np.exp(0.674 * scale)))
+        p95.append(last_close * float(np.exp(1.645 * scale)))
+
+    forecast_dates = _next_trading_dates(last_date, horizon_days)
+    history_dates = dates.iloc[-history_lookback:].dt.strftime("%Y-%m-%d").tolist()
+    history_close = closes[-history_lookback:].tolist()
+
+    return ForecastResult(
+        horizon_days=horizon_days,
+        method="naive_persistence",
+        mu=0.0,
+        sigma=daily_vol,
+        last_close=last_close,
+        last_date=last_date.strftime("%Y-%m-%d"),
+        history_dates=history_dates,
+        history_close=history_close,
+        forecast_dates=[d.strftime("%Y-%m-%d") for d in forecast_dates],
+        median=median,
+        p05=p05,
+        p25=p25,
+        p75=p75,
+        p95=p95,
+    )
+
+
 def forecast(method: str, horizon_days: int, **kwargs) -> ForecastResult:
     """Dispatch to the requested method, falling back to GBM if ML is missing."""
     method = (method or "gbm").lower()
     common = {k: kwargs[k] for k in ("n_simulations", "seed") if k in kwargs}
+
+    if method == "naive":
+        return naive_forecast(
+            horizon_days=horizon_days,
+            history_lookback=kwargs.get("history_lookback", 252),
+            seed=kwargs.get("seed"),
+        )
 
     if method == "ml":
         if not ml_forecaster_available():
@@ -342,8 +473,115 @@ def forecast(method: str, horizon_days: int, **kwargs) -> ForecastResult:
             ml_kwargs["history_lookback"] = kwargs["history_lookback"]
         return ml_forecast(horizon_days=horizon_days, **ml_kwargs)
 
+    if method in ("chronos", "chronos_zs", "chronos_ft"):
+        finetuned = method == "chronos_ft"
+        chronos_kwargs = {}
+        if "n_simulations" in kwargs:
+            chronos_kwargs["n_samples"] = kwargs["n_simulations"]
+        if "history_lookback" in kwargs:
+            chronos_kwargs["history_lookback"] = kwargs["history_lookback"]
+        if "context_length" in kwargs:
+            chronos_kwargs["context_length"] = kwargs["context_length"]
+        return chronos_forecast(horizon_days=horizon_days, finetuned=finetuned, **chronos_kwargs)
+
     gbm_kwargs = dict(common)
     for k in ("lookback_days", "history_lookback"):
         if k in kwargs:
             gbm_kwargs[k] = kwargs[k]
     return gbm_forecast(horizon_days=horizon_days, **gbm_kwargs)
+
+
+def grade_predictions(
+    target_dates: Optional[List[str]] = None,
+    methods: Optional[List[str]] = None,
+    n_samples: int = 200,
+) -> Dict:
+    """
+    Hackathon-style grading: for each target_date in the holdout window,
+    run each method using only training-cutoff inputs, and compare the
+    predicted price to the actual close on that date.
+
+    Returns per-task and per-method aggregate metrics (MAPE, RMSE,
+    directional accuracy, calibration of the 95% band).
+    """
+    from server.data_loader import load_live, TRAIN_CUTOFF_DATE
+
+    methods = methods or ["gbm", "ml", "chronos_zs"]
+    if target_dates is None:
+        live = load_live()
+        target_dates = [d.strftime("%Y-%m-%d") for d in pd.to_datetime(live["date"])]
+
+    if not target_dates:
+        return {"error": "no holdout target dates available", "methods": methods}
+
+    df = load()
+    last_train_close = float(df["close"].iloc[-1])
+    last_train_date = pd.Timestamp(df["date"].iloc[-1])
+
+    live = load_live()
+    actuals = {pd.Timestamp(d).strftime("%Y-%m-%d"): float(p) for d, p in zip(live["date"], live["close"])}
+
+    tasks = []
+    for date_str in target_dates:
+        target = pd.Timestamp(date_str)
+        if target <= last_train_date:
+            continue
+        horizon = max(int((target - last_train_date) / pd.Timedelta(days=1) * 5 / 7), 1)
+        actual = actuals.get(date_str)
+        if actual is None:
+            continue
+
+        per_method = {}
+        for m in methods:
+            try:
+                res = forecast(method=m, horizon_days=horizon, n_simulations=n_samples)
+                pred_median = float(res.median[-1])
+                pred_p05 = float(res.p05[-1])
+                pred_p95 = float(res.p95[-1])
+                per_method[m] = {
+                    "predicted": pred_median,
+                    "p05": pred_p05,
+                    "p95": pred_p95,
+                    "abs_error": abs(pred_median - actual),
+                    "ape": abs(pred_median - actual) / max(actual, 1e-8),
+                    "direction_correct": int((pred_median - last_train_close) * (actual - last_train_close) >= 0),
+                    "in_95_band": int(pred_p05 <= actual <= pred_p95),
+                }
+            except Exception as e:
+                per_method[m] = {"error": str(e)[:120]}
+
+        tasks.append({
+            "target_date": date_str,
+            "horizon_days": horizon,
+            "actual": actual,
+            "last_train_close": last_train_close,
+            "predictions": per_method,
+        })
+
+    aggregates: Dict[str, Dict] = {}
+    for m in methods:
+        apes, ses, dirs, cals = [], [], [], []
+        for t in tasks:
+            p = t["predictions"].get(m, {})
+            if "ape" in p:
+                apes.append(p["ape"])
+                ses.append((p["predicted"] - t["actual"]) ** 2)
+                dirs.append(p["direction_correct"])
+                cals.append(p["in_95_band"])
+        if apes:
+            aggregates[m] = {
+                "mape": float(np.mean(apes)),
+                "rmse": float(np.sqrt(np.mean(ses))),
+                "directional_accuracy": float(np.mean(dirs)),
+                "calibration_95": float(np.mean(cals)),
+                "n_tasks": len(apes),
+            }
+        else:
+            aggregates[m] = {"error": "no valid tasks", "n_tasks": 0}
+
+    return {
+        "train_cutoff": str(TRAIN_CUTOFF_DATE.date()),
+        "n_tasks": len(tasks),
+        "tasks": tasks,
+        "aggregates": aggregates,
+    }

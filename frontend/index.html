@@ -25,6 +25,7 @@
 
     <nav class="tabs">
         <button class="tab active" data-tab="forecast">Forecast</button>
+        <button class="tab" data-tab="grade">Grade Tasks</button>
         <button class="tab" data-tab="live">Live Action</button>
         <button class="tab" data-tab="backtest">Backtest</button>
         <button class="tab" data-tab="holdout">Holdout</button>
@@ -46,8 +47,11 @@
             <div class="controls">
                 <label>Method
                     <select id="forecast-method">
-                        <option value="gbm" selected>GBM Monte Carlo</option>
+                        <option value="naive">Naive persistence (no model)</option>
+                        <option value="gbm">GBM Monte Carlo (statistical)</option>
                         <option value="ml">LSTM (trained)</option>
+                        <option value="chronos_zs">Chronos zero-shot (foundation model, no FT)</option>
+                        <option value="chronos_ft" selected>Chronos fine-tuned (local)</option>
                     </select>
                 </label>
                 <label>Horizon
@@ -72,6 +76,37 @@
             <div class="metrics-row" id="forecast-metrics"></div>
             <div class="chart" id="chart-forecast"></div>
             <div id="forecast-eval-output" style="margin-top:12px"></div>
+        </section>
+
+        <!-- ── Grade Tasks tab (hackathon evaluation) ───────────────────── -->
+        <section class="tab-panel" id="panel-grade">
+            <div class="panel-header">
+                <h2>Hackathon Grading</h2>
+                <p class="muted">
+                    For every date in the post-cutoff holdout window, each method is asked
+                    to predict the close price using <em>only</em> training-cutoff data.
+                    The actual price (revealed only here) scores the predictions: MAPE,
+                    RMSE, directional accuracy, and 95% confidence-band calibration.
+                </p>
+            </div>
+            <div class="controls">
+                <label>Methods
+                    <select id="grade-methods" multiple size="5">
+                        <option value="naive" selected>Naive persistence</option>
+                        <option value="gbm" selected>GBM Monte Carlo</option>
+                        <option value="ml">LSTM (trained)</option>
+                        <option value="chronos_zs" selected>Chronos zero-shot</option>
+                        <option value="chronos_ft" selected>Chronos fine-tuned</option>
+                    </select>
+                </label>
+                <label>MC samples
+                    <input type="number" id="grade-samples" min="50" max="2000" step="50" value="200" />
+                </label>
+                <button class="btn primary" id="btn-grade">Run Grading</button>
+            </div>
+            <div id="grade-aggregates" class="metrics-row"></div>
+            <div class="chart" id="chart-grade"></div>
+            <div id="grade-table-wrap" style="margin-top:16px"></div>
         </section>
 
         <!-- ── Live Action tab ──────────────────────────────────────────── -->

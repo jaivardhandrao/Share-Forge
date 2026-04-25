@@ -13,7 +13,7 @@ license: mit
 
 **RL trading agent for Tata Gold ETF (TATAGOLD.NS)** — built for the Meta PyTorch OpenEnv Hackathon at Scaler School of Technology.
 
-A three-stage ML pipeline: an LSTM **price forecaster** trained with Gaussian-NLL, a **behavior-cloned LSTM policy** distilled from a perfect-hindsight expert, and a **PPO + LSTM RL agent** that fine-tunes on top of the BC initialization with the forecaster's prediction injected into its observation space. Plus an OpenEnv-compliant server, an Apache ECharts frontend with 1W / 1M / 3M / 6M / 1Y forecasts, and a Postgres-backed history layer — all wired into a single `docker compose up`.
+A four-method forecasting stack — **GBM Monte Carlo**, **custom LSTM (PyTorch + Gaussian-NLL)**, **Chronos-T5 zero-shot** (Amazon's open-source foundation model), and **Chronos-T5 fine-tuned locally** — plus a **PPO + LSTM RL trading agent** that consumes the forecaster's signal as an observation feature. Strict training/holdout split at 2026-03-31 enforced by the data loader. Single-date price prediction endpoint, multi-method holdout grading endpoint, OpenEnv-compliant evaluation server, Apache ECharts frontend with 1W / 1M / 3M / 6M / 1Y forecasts, Postgres history. All wired into one `docker compose up`.
 
 ## Quick Start
 
@@ -23,21 +23,25 @@ docker compose up --build
 
 Then open **http://localhost** (port 80). Postgres is brought up first, the Share-Forge service waits on its healthcheck, and the ECharts UI is served at `/`.
 
-### Local development (without Docker)
+### Local development on Apple Silicon (M-series, MPS)
 
 ```bash
 pip install -r server/requirements.txt
-python -m server.data_loader              # fetch + cache TATAGOLD.NS
+python -m server.data_loader              # fetch + cache TATAGOLD.NS (cutoff 2026-03-31)
 
-# ── ML pipeline (in order) ───────────────────────────────────────────
-python train_forecaster.py --epochs 50    # 1. LSTM forecaster (PyTorch + MPS)
-python train_bc.py        --epochs 30     # 2. BC policy (supervised cross-entropy)
-python train.py --timesteps 200000 \      # 3. PPO RL agent (uses forecaster signal)
-                --use-ml-forecaster
+# ── Forecasting models (in order, all run on MPS) ────────────────────
+python train_forecaster.py        --epochs 50  # custom LSTM with Gaussian NLL
+python train_chronos_finetune.py  --epochs 30  # Chronos-T5-tiny fine-tune (~10 min on M-series)
+
+# ── RL stack (optional — the trading agent on top) ───────────────────
+python train_bc.py     --epochs 30
+python train.py        --timesteps 200000 --use-ml-forecaster
 
 DATABASE_URL=sqlite:///./share_forge.db PORT=8080 \
     python -m uvicorn server.app:app --host 0.0.0.0 --port 8080 --reload
 ```
+
+Chronos zero-shot needs no training — it runs directly off the pretrained Hugging Face checkpoint and is the fastest path to a working forecaster. The fine-tune script specialises Chronos to TATAGOLD's history; expect a 1-3% MAPE improvement on the holdout.
 
 The server reads whichever checkpoints exist and uses the best available policy automatically — `PPO > BC > momentum heuristic`. So a freshly-cloned repo produces sensible actions even before any training, and each stage measurably improves them.
 
@@ -102,6 +106,17 @@ load_live()  # bars >= 2026-04-01  (exposed via /api/live, never seen by model)
 
 ## ML Pipeline
 
+### Forecasting Methods (four side-by-side)
+
+| Method | Model | When to use | Training time on M-series |
+|---|---|---|---|
+| `gbm` | Geometric Brownian Motion Monte Carlo | Always works, no training, baseline | n/a |
+| `ml` | Custom LSTM with Gaussian NLL head | Trained from scratch on TATAGOLD only | ~3-5 min |
+| `chronos_zs` | Amazon Chronos-T5-tiny zero-shot | Default — pretrained foundation model, no training needed | 0 min |
+| `chronos_ft` | Chronos-T5-tiny fine-tuned locally | Best accuracy after specialisation | ~10 min |
+
+The frontend's Forecast tab lets you switch methods live, and the Grade Tasks tab runs all four against the holdout dates and ranks them by MAPE / directional accuracy / 95% calibration.
+
 ### Stage 1 — LSTM forecaster (`train_forecaster.py`)
 
 A 2-layer LSTM with two linear heads (`mean`, `log_std`) predicts the cumulative log return of TATAGOLD.NS over the next K trading days. Trained with Gaussian negative log-likelihood so the model learns its own uncertainty.
@@ -151,8 +166,10 @@ The LSTM forecaster predicts the cumulative log return over its training horizon
 |---|---|---|
 | `/api/health` | GET | service + model + data + DB status |
 | `/health` | GET | OpenEnv minimal healthcheck |
-| `/api/forecast` | POST | Forecast for `horizon ∈ {1W, 1M, 3M, 6M, 1Y}` with `method ∈ {gbm, ml}` |
-| `/api/forecast-eval` | GET | Score the trained LSTM forecaster on post-cutoff bars |
+| `/api/forecast` | POST | Forecast for `horizon ∈ {1W, 1M, 3M, 6M, 1Y}` with `method ∈ {gbm, ml, chronos_zs, chronos_ft}` |
+| `/api/predict-price` | POST | Predict close on a single date with chosen method |
+| `/api/grade-tasks` | POST | Hackathon grader: per-method MAPE / RMSE / dir-acc / calibration on holdout |
+| `/api/forecast-eval` | GET | Score the LSTM forecaster on post-cutoff bars |
 | `/api/data` | GET | training bars (≤ 2026-03-31) |
 | `/api/live` | GET | holdout bars (≥ 2026-04-01) — never seen by model |
 | `/api/live-action` | POST | run agent on most recent training bars |

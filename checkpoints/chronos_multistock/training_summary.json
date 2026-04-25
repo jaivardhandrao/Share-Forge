@@ -1,0 +1,16 @@
+{
+  "tickers": [
+    "GOLDBEES.NS",
+    "HDFCGOLD.NS",
+    "AXISGOLD.NS",
+    "BSLGOLDETF.NS",
+    "TATAGOLD.NS"
+  ],
+  "model_id": "amazon/chronos-t5-mini",
+  "n_train_rows_total": 10617,
+  "n_train_windows": 9236,
+  "n_val_windows": 1026,
+  "best_val_loss": 0.9301163120703264,
+  "elapsed_seconds": 1589.8435220718384,
+  "checkpoint_dir": "/Users/jaivardhandrao/Desktop/ScalerRepos/Hackathon_PRO/Share-Forge/checkpoints/chronos_multistock"
+}

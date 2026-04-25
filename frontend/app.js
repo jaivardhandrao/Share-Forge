@@ -128,12 +128,22 @@ function renderForecast(data) {
     const band50Lower = p25;
     const band50Width = padNulls(data.forecast.p75.map((v, i) => v - data.forecast.p25[i]));
 
+    let overlaySeries = null;
+    if (data.holdout_overlay && data.holdout_overlay.dates && data.holdout_overlay.dates.length) {
+        const overlayMap = {};
+        data.holdout_overlay.dates.forEach((d, i) => { overlayMap[d] = data.holdout_overlay.close[i]; });
+        overlaySeries = allDates.map(d => overlayMap[d] ?? null);
+    }
+
+    const legendData = ["History", "Median", "5–95%", "25–75%"];
+    if (overlaySeries) legendData.push("Actual (holdout)");
+
     chart.setOption({
         backgroundColor: "transparent",
         textStyle: { color: "#e6edf3" },
         title: { text: `TATAGOLD.NS — ${data.horizon_days}d forecast`, left: "center", textStyle: { fontSize: 14, color: "#e6edf3" } },
         tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-        legend: { data: ["History", "Median", "5–95%", "25–75%"], top: 28, textStyle: { color: "#8b949e" } },
+        legend: { data: legendData, top: 28, textStyle: { color: "#8b949e" } },
         grid: { left: 60, right: 30, top: 70, bottom: 60 },
         xAxis: { type: "category", data: allDates, axisLabel: { color: "#8b949e" } },
         yAxis: {
@@ -198,6 +208,18 @@ function renderForecast(data) {
                 itemStyle: { color: "#58a6ff" },
                 symbol: "none",
             },
+            ...(overlaySeries ? [{
+                name: "Actual (holdout)",
+                type: "line",
+                data: overlaySeries,
+                connectNulls: true,
+                smooth: false,
+                lineStyle: { color: "#f85149", width: 2.5 },
+                itemStyle: { color: "#f85149" },
+                symbol: "circle",
+                symbolSize: 6,
+                z: 10,
+            }] : []),
         ],
     });
 
@@ -425,6 +447,94 @@ async function refreshHistory() {
 }
 
 document.getElementById("btn-history").addEventListener("click", refreshHistory);
+
+// ── Grade Tasks tab ─────────────────────────────────────────────────────────
+async function runGrading() {
+    const methodsSel = document.getElementById("grade-methods");
+    const methods = Array.from(methodsSel.selectedOptions).map(o => o.value);
+    const samples = parseInt(document.getElementById("grade-samples").value, 10);
+    const data = await api("/api/grade-tasks", {
+        method: "POST",
+        body: JSON.stringify({ methods: methods.length ? methods : null, n_samples: samples }),
+    });
+
+    if (data.error) {
+        document.getElementById("grade-aggregates").innerHTML = `<div class="error">${data.error}</div>`;
+        return;
+    }
+
+    const aggCards = Object.entries(data.aggregates || {}).map(([m, a]) => {
+        if (a.error) return `<div class="metric"><div class="label">${m}</div><div class="value red">${a.error}</div></div>`;
+        return `
+            <div class="metric">
+                <div class="label">${m}</div>
+                <div class="value accent">${(a.mape * 100).toFixed(2)}% MAPE</div>
+                <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+                    Dir: ${(a.directional_accuracy * 100).toFixed(0)}% · Cal95: ${(a.calibration_95 * 100).toFixed(0)}% · n=${a.n_tasks}
+                </div>
+            </div>`;
+    }).join("");
+    document.getElementById("grade-aggregates").innerHTML = aggCards;
+
+    const tasks = data.tasks || [];
+    const dates = tasks.map(t => t.target_date);
+    const actual = tasks.map(t => t.actual);
+    const series = [{
+        name: "Actual",
+        type: "line",
+        data: actual,
+        lineStyle: { color: "#3fb950", width: 3 },
+        symbol: "circle", symbolSize: 8,
+    }];
+    const colors = { gbm: "#58a6ff", ml: "#bc8cff", chronos_zs: "#f0b429", chronos_ft: "#ff7b72" };
+    const methodSet = new Set();
+    tasks.forEach(t => Object.keys(t.predictions).forEach(m => methodSet.add(m)));
+    methodSet.forEach(m => {
+        series.push({
+            name: m,
+            type: "line",
+            data: tasks.map(t => t.predictions[m]?.predicted ?? null),
+            lineStyle: { color: colors[m] || "#8b949e", width: 1.5, type: "dashed" },
+            symbol: "diamond", symbolSize: 6,
+        });
+    });
+
+    const chart = initChart("chart-grade");
+    if (chart) {
+        chart.setOption({
+            backgroundColor: "transparent",
+            textStyle: { color: "#e6edf3" },
+            title: { text: "Predictions vs. actual on holdout dates", left: "center", textStyle: { fontSize: 14, color: "#e6edf3" } },
+            tooltip: { trigger: "axis" },
+            legend: { data: series.map(s => s.name), top: 28, textStyle: { color: "#8b949e" } },
+            grid: { left: 60, right: 30, top: 70, bottom: 50 },
+            xAxis: { type: "category", data: dates, axisLabel: { color: "#8b949e" } },
+            yAxis: { type: "value", scale: true, axisLabel: { color: "#8b949e", formatter: v => `₹${v.toFixed(0)}` }, splitLine: { lineStyle: { color: "#21262d" } } },
+            series,
+        });
+    }
+
+    const cols = ["Date", "Actual", ...Array.from(methodSet).map(m => `${m} (pred / err%)`)];
+    const rows = tasks.map(t => {
+        const cells = [t.target_date, fmt.money(t.actual)];
+        Array.from(methodSet).forEach(m => {
+            const p = t.predictions[m] || {};
+            if (p.error) cells.push(`<span style="color:var(--red)">${p.error.slice(0, 30)}</span>`);
+            else cells.push(`${fmt.money(p.predicted)} <span style="color:var(--text-dim)">(${(p.ape * 100).toFixed(2)}%)</span>`);
+        });
+        return `<tr>${cells.map(c => `<td>${c}</td>`).join("")}</tr>`;
+    }).join("");
+    document.getElementById("grade-table-wrap").innerHTML = `
+        <table>
+            <thead><tr>${cols.map(c => `<th>${c}</th>`).join("")}</tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+}
+
+document.getElementById("btn-grade").addEventListener("click", async (ev) => {
+    setBusy(ev.target, true);
+    try { await runGrading(); } catch (e) { showError("panel-grade", e.message); } finally { setBusy(ev.target, false); }
+});
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 (async () => {

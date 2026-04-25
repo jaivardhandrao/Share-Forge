@@ -53,6 +53,7 @@ from server.forecaster import (
     HORIZONS,
     evaluate_ml_on_holdout,
     forecast as run_forecast,
+    grade_predictions,
     ml_forecaster_available,
     resolve_horizon,
 )
@@ -157,6 +158,28 @@ def api_forecast(req: ForecastRequest) -> Dict[str, Any]:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
     payload = result.to_dict()
+
+    try:
+        live = load_live()
+        if not live.empty:
+            forecast_date_set = set(payload["forecast"]["dates"])
+            overlay_dates: List[str] = []
+            overlay_close: List[float] = []
+            for _, row in live.iterrows():
+                d = pd.Timestamp(row["date"]).strftime("%Y-%m-%d")
+                if d in forecast_date_set:
+                    overlay_dates.append(d)
+                    overlay_close.append(float(row["close"]))
+            payload["holdout_overlay"] = {
+                "dates": overlay_dates,
+                "close": overlay_close,
+                "note": "Actual TATAGOLD.NS closes from the holdout window. NOT seen by the model — included only for visual comparison.",
+            }
+        else:
+            payload["holdout_overlay"] = {"dates": [], "close": [], "note": "No holdout data yet."}
+    except Exception:
+        payload["holdout_overlay"] = {"dates": [], "close": [], "note": "Holdout fetch failed."}
+
     db_id = database.record_prediction(payload, horizon_label=req.horizon)
     payload["persisted_id"] = db_id
     return payload
@@ -166,6 +189,74 @@ def api_forecast(req: ForecastRequest) -> Dict[str, Any]:
 def api_forecast_eval() -> Dict[str, Any]:
     """Score the trained ML forecaster on post-cutoff bars (read-only)."""
     return evaluate_ml_on_holdout()
+
+
+class PredictPriceRequest(BaseModel):
+    target_date: str = Field(..., description="YYYY-MM-DD; must be after the train cutoff")
+    method: str = Field(default="chronos_zs", description="One of gbm, ml, chronos_zs, chronos_ft")
+    n_samples: int = Field(default=200, ge=10, le=2000)
+
+
+@app.post("/api/predict-price")
+def api_predict_price(req: PredictPriceRequest) -> Dict[str, Any]:
+    """
+    Predict the close price on a single target date using only data up to the
+    training cutoff. Returns the median prediction plus 5/25/75/95 percentile
+    bounds.
+    """
+    from server.data_loader import TRAIN_CUTOFF_DATE
+    target = pd.Timestamp(req.target_date)
+    cutoff = TRAIN_CUTOFF_DATE
+    if target <= cutoff:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"target_date must be after the cutoff {cutoff.date()}"},
+        )
+    horizon = max(int((target - cutoff) / pd.Timedelta(days=1) * 5 / 7), 1)
+    try:
+        result = run_forecast(method=req.method, horizon_days=horizon, n_simulations=req.n_samples)
+    except RuntimeError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+    return {
+        "target_date": req.target_date,
+        "method": result.method,
+        "horizon_trading_days": horizon,
+        "last_train_close": result.last_close,
+        "last_train_date": result.last_date,
+        "predicted_price": float(result.median[-1]),
+        "p05": float(result.p05[-1]),
+        "p25": float(result.p25[-1]),
+        "p75": float(result.p75[-1]),
+        "p95": float(result.p95[-1]),
+        "trajectory": {
+            "dates": result.forecast_dates,
+            "median": result.median,
+            "p05": result.p05,
+            "p95": result.p95,
+        },
+    }
+
+
+class GradeTasksRequest(BaseModel):
+    target_dates: Optional[List[str]] = Field(default=None, description="If null, uses every holdout date")
+    methods: Optional[List[str]] = Field(default=None, description="Default: gbm, ml, chronos_zs")
+    n_samples: int = Field(default=200, ge=10, le=2000)
+
+
+@app.post("/api/grade-tasks")
+def api_grade_tasks(req: GradeTasksRequest) -> Dict[str, Any]:
+    """
+    Hackathon grader: for each target date in the holdout window, run every
+    requested forecasting method using ONLY training-cutoff inputs, then
+    compare the predicted price to the actual close. Reports MAPE, RMSE,
+    directional accuracy, and 95% band calibration per method.
+    """
+    return grade_predictions(
+        target_dates=req.target_dates,
+        methods=req.methods,
+        n_samples=req.n_samples,
+    )
 
 
 # ── Training data ──────────────────────────────────────────────────────────

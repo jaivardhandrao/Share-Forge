@@ -17,6 +17,7 @@ Run as a script to pre-populate the cache:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -24,9 +25,9 @@ import numpy as np
 import pandas as pd
 
 DATA_DIR = Path(__file__).parent / "data"
-TICKER = "TATAGOLD.NS"
+TICKER = os.getenv("SHARE_FORGE_TICKER", "GOLDBEES.NS")
 CACHE_PATH = DATA_DIR / f"{TICKER}.full.csv"
-DEFAULT_START = "2015-01-01"
+DEFAULT_START = "2007-01-01"
 
 TRAIN_CUTOFF_DATE = pd.Timestamp("2026-03-31")
 LIVE_START_DATE = pd.Timestamp("2026-04-01")
