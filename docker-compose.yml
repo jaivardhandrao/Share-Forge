@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: share-forge-postgres
+    environment:
+      POSTGRES_USER: shareforge
+      POSTGRES_PASSWORD: shareforge_dev
+      POSTGRES_DB: shareforge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shareforge -d shareforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  share-forge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: share-forge
+    ports:
+      - "80:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+      HOST: 0.0.0.0
+      PORT: "80"
+      DATABASE_URL: postgresql+psycopg2://shareforge:shareforge_dev@postgres:5432/shareforge
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

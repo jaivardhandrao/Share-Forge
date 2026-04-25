@@ -1,0 +1,17 @@
+name: share_forge
+version: "1.0.0"
+description: "An RL trading environment where agents trade Tata Gold ETF (TATAGOLD.NS) on historical NSE data, scored on risk-adjusted returns."
+author: "Team Share-Forge"
+tags:
+  - trading
+  - rl
+  - finance
+  - pytorch
+  - ppo
+  - timeseries
+  - gold-etf
+task_types:
+  - easy_long_only
+  - medium_volatile
+  - medium_sideways
+  - hard_adversarial

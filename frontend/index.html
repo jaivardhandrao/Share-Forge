@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Share-Forge — RL Trading Agent for Tata Gold ETF</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <span class="logo">SF</span>
+            <div>
+                <h1>Share-Forge</h1>
+                <p class="tagline">RL trading agent for Tata Gold ETF · TATAGOLD.NS</p>
+            </div>
+        </div>
+        <div class="status-pills">
+            <span class="pill" id="pill-health">health: …</span>
+            <span class="pill" id="pill-cutoff">cutoff: …</span>
+            <span class="pill" id="pill-db">db: …</span>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button class="tab active" data-tab="forecast">Forecast</button>
+        <button class="tab" data-tab="live">Live Action</button>
+        <button class="tab" data-tab="backtest">Backtest</button>
+        <button class="tab" data-tab="holdout">Holdout</button>
+        <button class="tab" data-tab="history">History</button>
+    </nav>
+
+    <main>
+        <!-- ── Forecast tab ─────────────────────────────────────────────── -->
+        <section class="tab-panel active" id="panel-forecast">
+            <div class="panel-header">
+                <h2>Price Forecast</h2>
+                <p class="muted">
+                    GBM Monte Carlo, calibrated on TATAGOLD.NS bars up to
+                    <code id="cutoff-date-inline">2026-03-31</code>. Bands show
+                    5th / 25th / 75th / 95th percentiles across 1,000 simulations.
+                </p>
+            </div>
+
+            <div class="controls">
+                <label>Method
+                    <select id="forecast-method">
+                        <option value="gbm" selected>GBM Monte Carlo</option>
+                        <option value="ml">LSTM (trained)</option>
+                    </select>
+                </label>
+                <label>Horizon
+                    <select id="forecast-horizon">
+                        <option value="1W">1 Week</option>
+                        <option value="1M" selected>1 Month</option>
+                        <option value="3M">3 Months</option>
+                        <option value="6M">6 Months</option>
+                        <option value="1Y">1 Year</option>
+                    </select>
+                </label>
+                <label>Simulations
+                    <input type="number" id="forecast-sims" min="100" max="5000" step="100" value="1000" />
+                </label>
+                <label>Lookback (days)
+                    <input type="number" id="forecast-lookback" min="20" max="500" step="10" value="120" />
+                </label>
+                <button class="btn primary" id="btn-forecast">Run Forecast</button>
+                <button class="btn" id="btn-eval-ml">Eval LSTM on holdout</button>
+            </div>
+
+            <div class="metrics-row" id="forecast-metrics"></div>
+            <div class="chart" id="chart-forecast"></div>
+            <div id="forecast-eval-output" style="margin-top:12px"></div>
+        </section>
+
+        <!-- ── Live Action tab ──────────────────────────────────────────── -->
+        <section class="tab-panel" id="panel-live">
+            <div class="panel-header">
+                <h2>Live Action</h2>
+                <p class="muted">
+                    Run the trained PPO agent on the most recent training-window bars
+                    and get a single recommended action.
+                </p>
+            </div>
+
+            <div class="controls">
+                <label>Lookback (days)
+                    <input type="number" id="live-lookback" min="40" max="250" step="10" value="120" />
+                </label>
+                <label>
+                    <input type="checkbox" id="live-is-long" />
+                    Already long
+                </label>
+                <button class="btn primary" id="btn-live">Run Agent</button>
+            </div>
+
+            <div class="action-card" id="live-action-card"></div>
+            <div class="chart" id="chart-live"></div>
+        </section>
+
+        <!-- ── Backtest tab ─────────────────────────────────────────────── -->
+        <section class="tab-panel" id="panel-backtest">
+            <div class="panel-header">
+                <h2>Backtest</h2>
+                <p class="muted">
+                    Replay a historical task end-to-end and compare against buy-and-hold.
+                </p>
+            </div>
+
+            <div class="controls">
+                <label>Task
+                    <select id="backtest-task"></select>
+                </label>
+                <button class="btn primary" id="btn-backtest">Run Backtest</button>
+            </div>
+
+            <div class="metrics-row" id="backtest-metrics"></div>
+            <div class="chart" id="chart-backtest"></div>
+        </section>
+
+        <!-- ── Holdout tab ──────────────────────────────────────────────── -->
+        <section class="tab-panel" id="panel-holdout">
+            <div class="panel-header">
+                <h2>Holdout (post-cutoff)</h2>
+                <p class="muted">
+                    Bars dated <code>2026-04-01</code> onward — exposed on a separate
+                    route. The model never sees these rows during training or inference.
+                </p>
+            </div>
+
+            <button class="btn" id="btn-holdout">Refresh Holdout</button>
+            <div class="metrics-row" id="holdout-metrics"></div>
+            <div class="chart" id="chart-holdout"></div>
+        </section>
+
+        <!-- ── History tab ──────────────────────────────────────────────── -->
+        <section class="tab-panel" id="panel-history">
+            <div class="panel-header">
+                <h2>Persisted History</h2>
+                <p class="muted">Every forecast, backtest, and live action call is logged to Postgres.</p>
+            </div>
+            <button class="btn" id="btn-history">Refresh</button>
+            <div class="history-grid">
+                <div>
+                    <h3>Recent Forecasts</h3>
+                    <table id="table-predictions"><thead><tr><th>When</th><th>Horizon</th><th>Last close</th><th>Median terminal</th><th>p05 / p95</th></tr></thead><tbody></tbody></table>
+                </div>
+                <div>
+                    <h3>Recent Backtests</h3>
+                    <table id="table-backtests"><thead><tr><th>When</th><th>Task</th><th>Score</th><th>Sharpe</th><th>Return</th><th>Trades</th></tr></thead><tbody></tbody></table>
+                </div>
+                <div>
+                    <h3>Recent Actions</h3>
+                    <table id="table-actions"><thead><tr><th>When</th><th>Action</th><th>Last close</th><th>Long?</th><th>Source</th></tr></thead><tbody></tbody></table>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <span>Share-Forge · Meta PyTorch OpenEnv Hackathon · SST</span>
+        <span><a href="/docs">API docs</a> · <a href="/api/health">/api/health</a> · <a href="/gradio">Gradio playground</a></span>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

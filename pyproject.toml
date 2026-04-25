@@ -1,0 +1,36 @@
+[project]
+name = "share-forge"
+version = "0.1.0"
+description = "RL trading agent for Tata Gold ETF — Meta PyTorch OpenEnv Hackathon submission"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "gradio>=4.0.0",
+    "websockets>=12.0",
+    "requests>=2.25.0",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "yfinance>=0.2.40",
+    "torch>=2.2.0",
+    "gymnasium>=0.29.0",
+    "stable-baselines3>=2.3.0",
+    "sb3-contrib>=2.3.0",
+    "tensorboard>=2.15.0",
+    "matplotlib>=3.8.0",
+    "plotly>=5.18.0",
+    "openenv-core>=0.2.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.9",
+]
+
+[project.optional-dependencies]
+wandb = ["wandb>=0.16.0"]
+
+[project.scripts]
+server = "server.app:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
